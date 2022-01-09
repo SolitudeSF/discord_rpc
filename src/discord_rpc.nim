@@ -258,8 +258,11 @@ template assertResult(value, body): untyped =
     discard body
 
 proc existsSocket(s: string): bool =
-  var res: Stat
-  return stat(s, res) >= 0 and S_ISSOCK(res.st_mode)
+  when defined(windows):
+    return true # TODO
+  else:
+    var res: Stat
+    return stat(s, res) >= 0 and S_ISSOCK(res.st_mode)
 
 proc getSocketDir(): string =
   when defined(windows):
