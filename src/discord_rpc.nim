@@ -1,7 +1,7 @@
 import std/[net, os, endians, strutils, options, tables, httpclient, uri, with, typetraits, macros]
 when defined(posix):
   from posix import Stat, stat, S_ISSOCK
-import jsony, uuids
+import pkg/[jsony, uuids]
 
 const
   RPCVersion = 1
@@ -50,14 +50,14 @@ type
     cdnHost*, apiEndpoint*, environment*: string
 
   PremiumKind* = enum
-    pkNone, pkNitroClassic, pkNitro
+    pkNone, pkNitroClassic, pkNitro, pkNitroBasic
 
   Id* = int64
 
   User* = object
     id*: Id
-    username*, discriminator*, avatar*: string
-    bot*: bool
+    username*, discriminator*, globalName*, avatar*, avatarDecoration*, banner*: string
+    bot*, system*, mfaEnabled*, verified*: bool
     premium*: PremiumKind
 
   VoiceStatus* = object
@@ -82,14 +82,14 @@ type
 
   Channel* = object
     id*, guildId*: Id
-    name*: string
+    name*, topic*: string
     position*: int
     case kind*: ChannelKind
     of ckGuildVoice:
       bitrate*, userLimit*: int
       voiceStates*: seq[VoiceState]
     else:
-      topic*: string
+      discard
 
   Guild* = object
     id*: int64
@@ -696,20 +696,29 @@ proc send(d: DiscordRPC, command: Command, args = "") =
     msg = RpcMessage(opcode: opFrame, payload: payload)
   d.send msg
 
+proc renameHook(v: var Channel, fieldName: var string) =
+  if fieldName == "type":
+    fieldName = "kind"
+
 proc parseHook(s: string, i: var int, v: var Id) =
   var str = newStringOfCap(20)
   parseHook(s, i, str)
   v = str.parseBiggestInt
 
+proc parseHook(s: string, i: var int, v: var ChannelKind) =
+  var val: int
+  parseHook(s, i, val)
+  v = val.ChannelKind
+
 proc parseHook[T](s: string, i: var int, v: var Response[T]) =
   var
     dataStart = -1
     eventSeen, eventError = false
+    key = newStringOfCap(5)
   eatSpace(s, i)
   eatChar(s, i, '{')
   eatSpace(s, i)
-  while dataStart < 0 and not eventSeen:
-    var key: string
+  while dataStart < 0 or not eventSeen:
     parseHook(s, i, key)
     eatChar(s, i, ':')
     case key
@@ -723,17 +732,17 @@ proc parseHook[T](s: string, i: var int, v: var Response[T]) =
       eventError = eventStr == $reError
     else:
       skipValue(s, i)
-    eatChar(s, i, ',')
-  i = dataStart
+    inc i
+
   if eventError:
     var error: tuple[code: int, message: string]
-    parseHook(s, i, error)
+    parseHook(s, dataStart, error)
     var exc = new DiscordRPCError
     exc.code = error.code
     exc.msg = error.message
     raise exc
   else:
-    parseHook(s, i, v.distinctBase)
+    parseHook(s, dataStart, v.distinctBase)
 
 proc receiveResponse[T](d: DiscordRPC, t: typedesc[T], opCode = opFrame): T =
   let resp = d.socket.readMessage
