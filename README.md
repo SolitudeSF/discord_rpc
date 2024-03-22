@@ -27,7 +27,6 @@ discord.setActivity Activity(
 
 ## Example using other RPC facilities
 
-Needs to be compiled with `-d:ssl`.
 
 ```nim
 let
