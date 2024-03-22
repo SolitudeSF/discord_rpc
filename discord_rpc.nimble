@@ -9,4 +9,4 @@ srcDir        = "src"
 
 # Dependencies
 
-requires "nim >= 1.0.0", "uuids >= 0.1.12", "jsony >= 1.1.5"
+requires "nim >= 1.0.0", "uuids >= 0.1.12", "jsony >= 1.1.5", "puppy"
