@@ -1,0 +1,26 @@
+*
+!**/
+!*.*
+
+# Cache
+nimcache/
+rnimcache/
+dnimcache/
+
+*.o
+!/icons/*.o
+*.obj
+*.ilk
+*.exp
+*.pdb
+*.lib
+*.dll
+*.exe
+*.so
+*.dylib
+*.zip
+
+*.log
+*.pdb
+.DS_Store
+*.out
