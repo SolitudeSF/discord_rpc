@@ -1,7 +1,7 @@
-import std/[net, os, endians, strutils, options, tables, httpclient, uri, with, typetraits, macros]
+import std/[net, os, endians, strutils, options, tables, uri, with, typetraits, macros]
 when defined(posix):
   from posix import Stat, stat, S_ISSOCK
-import pkg/[jsony, uuids]
+import pkg/[jsony, uuids, puppy]
 
 const
   RPCVersion = 1
@@ -770,8 +770,7 @@ proc newDiscordRPC*(clientId: int64): DiscordRPC =
 proc getOAuth2Token*(code: string, id: int64, secret: string, scopes: openArray[OAuthScope]):
     tuple[accessToken, refreshToken: string]  =
   let
-    client = newHttpClient()
-    headers = newHttpHeaders {"Content-Type": "application/x-www-form-urlencoded"}
+    headers = @{"Content-Type": "application/x-www-form-urlencoded"}
     body = encodeQuery {
       "grant_type": "authorization_code",
       "code": code,
@@ -779,9 +778,8 @@ proc getOAuth2Token*(code: string, id: int64, secret: string, scopes: openArray[
       "client_secret": secret,
       "scope": scopes.join " "
     }
-    response = client.request(
+    response = post(
       url = oauthUrl,
-      httpMethod = HttpPost,
       headers = headers,
       body = body
     )
