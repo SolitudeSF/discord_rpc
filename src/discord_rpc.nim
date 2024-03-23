@@ -1,6 +1,13 @@
 import std/[net, os, endians, strutils, options, tables, httpclient, uri, with, typetraits, macros]
+from winlean import Handle
 when defined(posix):
   from posix import Stat, stat, S_ISSOCK
+elif defined(windows):
+  import winlean
+
+  const
+    ERROR_PIPE_BUSY = 231
+
 import pkg/[jsony, uuids]
 
 const
@@ -12,7 +19,10 @@ type
     code*: int
 
   DiscordRPC* = ref object
-    socket: Socket
+    when defined(windows):
+      pipe: Handle
+    else:
+      socket: Socket
     clientId*: int64
 
   OpCode = enum
@@ -285,7 +295,9 @@ template assertResult(value, body): untyped =
 
 proc existsSocket(s: string): bool =
   when defined(windows):
-    return true # TODO
+    let hPipe = createFileW(newWideCString(s), GENERIC_READ, 0, nil, OPEN_EXISTING, 0, 0)
+    result = hPipe != INVALID_HANDLE_VALUE
+    discard closeHandle(hPipe)
   else:
     var res: Stat
     return stat(s, res) >= 0 and S_ISSOCK(res.st_mode)
@@ -318,28 +330,47 @@ func parseOpCode(u: uint32): OpCode =
   else:
     raise newException(CatchableError, "Invalid opcode: " & $u)
 
-proc readUint32(s: Socket): uint32 =
-  assertResult sizeof uint32, s.recv(addr result, sizeof uint32)
+proc readUint32(s: Socket | Handle): uint32 =
+  when s is Handle:
+    let len = int32(sizeof uint32)
+    var read:int32
+    let succ = readFile(s, cast[pointer](addr result), len, read.addr, nil)
+    assert succ.isSuccess
+  else:
+    assertResult sizeof uint32, s.recv(addr result, sizeof uint32)
   littleEndian32 addr result, addr result
 
-proc readOpCode(s: Socket): OpCode =
+proc readOpCode(s: Socket | Handle): OpCode =
   s.readUint32.parseOpCode
 
-proc readMessage(s: Socket): RpcMessage =
-  result.opCode = s.readOpCode
-  let len = int s.readUint32
-  result.payload = s.recv len
+proc readMessage(d: DiscordRPC): RpcMessage =
+  when defined(windows):
+    result.opCode = d.pipe.readOpCode
+    let len = int32 d.pipe.readUint32
+    var read:int32
+    result.payload = newString(len)
+    let succ = readFile(d.pipe, result.payload[0].addr, len, read.addr, nil)
+    assert succ.isSuccess
+  else:
+    result.opCode = d.socket.readOpCode
+    let len = int d.socket.readUint32
+    result.payload = d.socket.recv len
 
 func toString(u: uint32): string =
   result = newString(4)
   littleEndian32 addr result[0], unsafeAddr u
 
-proc write(s: Socket, m: RpcMessage) =
+proc write(s: Socket | Handle, m: RpcMessage) =
   var payload = newStringOfCap(m.payload.len + 8)
   payload.add m.opCode.uint32.toString
   payload.add m.payload.len.uint32.toString
   payload.add m.payload
-  assertResult payload.len, s.send(unsafeAddr payload[0], payload.len)
+  when s is Socket:
+    assertResult payload.len, s.send(unsafeAddr payload[0], payload.len)
+  else:
+    var written: int32
+    let succ = writeFile(s, payload[0].addr, payload.len.int32, written.addr, nil)
+    assert succ.isSuccess
 
 func composeHandshake(id: int64, version: int): string =
   result = newStringOfCap(85)
@@ -688,7 +719,10 @@ func composeCloseActivityRequest(id: int64): string =
   composeSendActivityJoinInvite id
 
 proc send(d: DiscordRPC, msg: RpcMessage) =
-  d.socket.write msg
+  when defined(windows):
+    d.pipe.write msg
+  else:
+    d.socket.write msg
 
 proc send(d: DiscordRPC, command: Command, args = "") =
   let
@@ -745,14 +779,22 @@ proc parseHook[T](s: string, i: var int, v: var Response[T]) =
     parseHook(s, dataStart, v.distinctBase)
 
 proc receiveResponse[T](d: DiscordRPC, t: typedesc[T], opCode = opFrame): T =
-  let resp = d.socket.readMessage
+  let resp = d.readMessage
   assert resp.opCode == opCode
   when T isnot void:
     result = T resp.payload.fromJson(Response[T])
 
+when defined(windows):
+  proc newPipe(p: string): Handle = 
+    result = createFileW(newWideCString(p), GENERIC_READ or GENERIC_WRITE, 0, nil, OPEN_EXISTING, 0, 0)
+    if result == INVALID_HANDLE_VALUE:
+      let err = osLastError()
+      if err.int32 != ERROR_PIPE_BUSY:
+        raiseOsError(err)
+
 proc connect*(d: DiscordRPC): tuple[config: ServerConfig, user: User] =
   when defined(windows):
-    d.socket.connect getSocketPath()
+    d.pipe = newPipe(getSocketPath())
   else:
     d.socket.connectUnix getSocketPath()
   let payload = composeHandshake(d.clientId, RPCVersion)
@@ -764,8 +806,12 @@ proc connect*(d: DiscordRPC): tuple[config: ServerConfig, user: User] =
   result.user = user
 
 proc newDiscordRPC*(clientId: int64): DiscordRPC =
-  DiscordRPC(socket: newSocket(when defined(windows): AF_INET else: AF_UNIX, protocol = IPPROTO_IP),
+  when defined(windows):
+    DiscordRPC(pipe: INVALID_HANDLE_VALUE, clientId: clientId)
+  else:
+    DiscordRPC(socket: newSocket(AF_UNIX, protocol = IPPROTO_IP),
     clientId: clientId)
+  
 
 proc getOAuth2Token*(code: string, id: int64, secret: string, scopes: openArray[OAuthScope]):
     tuple[accessToken, refreshToken: string]  =
@@ -859,3 +905,10 @@ proc sendActivityJoinInvite*(d: DiscordRPC, id: int64) =
 
 proc closeActivityRequest*(d: DiscordRPC, id: int64) =
   d.send cmdCloseActivityRequest, composeCloseActivityRequest(id)
+
+when isMainModule:
+  const
+    DISCORD_RPC_ID* {.intdefine.} = 0
+
+  let rpc = newDiscordRPC DISCORD_RPC_ID
+  discard rpc.connect
